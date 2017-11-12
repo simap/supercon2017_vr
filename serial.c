@@ -6,6 +6,7 @@
 // useful for messing with camera & OLED commands etc. as well as getting live image data
 // for image data you will probably want to crank up the baudrate to 2Mbaud or higher
 
+
 #if serialcontrol==1
 
 unsigned int camoptions;

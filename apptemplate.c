@@ -8,6 +8,9 @@
 
 #include "cambadge.h"
 #include "globals.h"
+#include <math.h>
+#include <string.h>
+#include <float.h>
 
 // states used by this application
 
@@ -15,19 +18,172 @@
 #define s_run 1
 #define s_freeze 2
 
+const uint8_t sinlut[256] = {
+    0x80,0x83,0x86,0x89,0x8c,0x8f,0x92,0x95,0x98,0x9b,0x9e,0xa2,0xa5,0xa7,0xaa,0xad,
+    0xb0,0xb3,0xb6,0xb9,0xbc,0xbe,0xc1,0xc4,0xc6,0xc9,0xcb,0xce,0xd0,0xd3,0xd5,0xd7,
+    0xda,0xdc,0xde,0xe0,0xe2,0xe4,0xe6,0xe8,0xea,0xeb,0xed,0xee,0xf0,0xf1,0xf3,0xf4,
+    0xf5,0xf6,0xf8,0xf9,0xfa,0xfa,0xfb,0xfc,0xfd,0xfd,0xfe,0xfe,0xfe,0xff,0xff,0xff,
+    0xff,0xff,0xff,0xff,0xfe,0xfe,0xfe,0xfd,0xfd,0xfc,0xfb,0xfa,0xfa,0xf9,0xf8,0xf6,
+    0xf5,0xf4,0xf3,0xf1,0xf0,0xee,0xed,0xeb,0xea,0xe8,0xe6,0xe4,0xe2,0xe0,0xde,0xdc,
+    0xda,0xd7,0xd5,0xd3,0xd0,0xce,0xcb,0xc9,0xc6,0xc4,0xc1,0xbe,0xbc,0xb9,0xb6,0xb3,
+    0xb0,0xad,0xaa,0xa7,0xa5,0xa2,0x9e,0x9b,0x98,0x95,0x92,0x8f,0x8c,0x89,0x86,0x83,
+    0x80,0x7c,0x79,0x76,0x73,0x70,0x6d,0x6a,0x67,0x64,0x61,0x5d,0x5a,0x58,0x55,0x52,
+    0x4f,0x4c,0x49,0x46,0x43,0x41,0x3e,0x3b,0x39,0x36,0x34,0x31,0x2f,0x2c,0x2a,0x28,
+    0x25,0x23,0x21,0x1f,0x1d,0x1b,0x19,0x17,0x15,0x14,0x12,0x11,0xf,0xe,0xc,0xb,
+    0xa,0x9,0x7,0x6,0x5,0x5,0x4,0x3,0x2,0x2,0x1,0x1,0x1,0x0,0x0,0x0,
+    0x0,0x0,0x0,0x0,0x1,0x1,0x1,0x2,0x2,0x3,0x4,0x5,0x5,0x6,0x7,0x9,
+    0xa,0xb,0xc,0xe,0xf,0x11,0x12,0x14,0x15,0x17,0x19,0x1b,0x1d,0x1f,0x21,0x23,
+    0x25,0x28,0x2a,0x2c,0x2f,0x31,0x34,0x36,0x39,0x3b,0x3e,0x41,0x43,0x46,0x49,0x4c,
+    0x4f,0x52,0x55,0x58,0x5a,0x5d,0x61,0x64,0x67,0x6a,0x6d,0x70,0x73,0x76,0x79,0x7c,
+};
 
 void draw();
 void readKeys();
 void generateTextures();
+void makepalette(int offset);
 
 int counter = 0;
 long timer = 0;
 long fpsTimer = 0;
-int fps = 0;;
+int fps = 0;
 long frames = 0;
 
-struct {} foo;
+enum {
+    SOLO, LEFTSIDE, RIGHTSIDE
+} syncMode = SOLO;
 
+
+//worldstate vars
+double posX = 22.0, posY = 11.5; //x and y start position
+double dirX = -1.0, dirY = 0.0; //initial direction vector
+double planeX = 0.0, planeY = 0.66; //the 2d raycaster version of camera plane
+
+double paletteOffset = 0;
+int rxError = 0;
+
+void printMode() {
+    switch (syncMode) {
+        default:
+            syncMode = SOLO;
+            printMode();
+            break;
+        case SOLO:
+            printf(cls top butcol "EXIT" bot "                 Solo");
+            break;
+        case LEFTSIDE:
+            printf(cls top butcol "EXIT" bot "                 Left");
+            break;
+        case RIGHTSIDE:
+            printf(cls top butcol "EXIT" bot "                Right");
+            break;
+    }
+}
+
+int u2rxbyte() {
+    
+    T1CON = 0b1000000000000000;
+    T1CONbits.TCKPS0 = 1;
+    PR1 = 0xffff;
+    TMR1 = 0;
+    IFS0CLR = _IFS0_T1IF_MASK;
+    
+    while (!U2STAbits.URXDA) {
+        if (U2STAbits.OERR) {
+            U2STAbits.OERR = 0;
+            return -1;
+        } // UART overrun
+        if (U2STAbits.FERR) {
+            U2STAbits.FERR = 0;
+            return -1;
+        } // Framing error
+
+        if (IFS0bits.T1IF)
+            return -1;
+        kickwatchdog;
+    };
+    return U2RXREG;
+}
+
+double receiveDouble() {
+    double d;
+    unsigned char *cp = (char*) &d;
+    int i, c;
+    for (i = 0; i < sizeof (double); i++) {
+        c = u2rxbyte();
+        if (c == -1)
+            return DBL_MIN;
+        *cp++ = c;
+    }
+    return d;
+}
+
+void sendDouble(double d) {
+    unsigned char *c = (char*) &d;
+    u2txbyte(*c++);
+    u2txbyte(*c++);
+    u2txbyte(*c++);
+    u2txbyte(*c++);
+}
+
+txState() {
+    //I hope this was easier than refactoring everything into a struct
+
+    u2txbyte(0); //frame start
+    sendDouble(posX);
+    sendDouble(posY);
+    sendDouble(dirX);
+    sendDouble(dirY);
+    sendDouble(planeX);
+    sendDouble(planeY);
+    sendDouble(paletteOffset);
+    u2txbyte(0xff); //frame end
+    rxError = 0;
+    if (u2rxbyte() != 1) { //wait for other side to ack
+        rxError = 1;
+//        delayus(10000); //delay long enough for rx to timeout and reset
+    }
+    
+}
+
+
+#define eyeShift -0.2
+
+
+rxState() {
+    rxError = 1;
+    //I hope this was easier than refactoring everything into a struct
+    double rposX = 22.0, rposY = 11.5; //x and y start position
+    double rdirX = -1.0, rdirY = 0.0; //initial direction vector
+    double rplaneX = 0.0, rplaneY = 0.66; //the 2d raycaster version of camera plane
+
+    if (u2rxbyte() != 0) return; //frame start
+    if ((rposX = receiveDouble()) == DBL_MIN) return;
+    if ((rposY = receiveDouble()) == DBL_MIN) return;
+    if ((rdirX = receiveDouble()) == DBL_MIN) return;
+    if ((rdirY = receiveDouble()) == DBL_MIN) return;
+    if ((rplaneX = receiveDouble()) == DBL_MIN) return;
+    if ((rplaneY = receiveDouble()) == DBL_MIN) return;
+    if ((paletteOffset = receiveDouble()) == DBL_MIN) return;
+    if (u2rxbyte() != 0xff) return; //frame end
+
+    posX = rposX;
+    posY = rposY;
+    dirX = rdirX;
+    dirY = rdirY;
+    planeX = rplaneX;
+    planeY = rplaneY;
+    
+    
+    //shift eye position
+//    rposX = rposX + rdirX * eyeShift;
+//    rposY = rposY + rdirY * eyeShift;
+    //(x,y) rotated left 90 deg is (-y, x) . pretend that we faced left, moved a bit, then restored direction
+    rposX = rposX + -rdirY * eyeShift;
+    rposY = rposY + rdirX * eyeShift;
+
+    rxError = 0;
+    u2txbyte(1); //send ack    
+}
 
 char* demoapp(unsigned int action) {
     static unsigned int state, colour;
@@ -55,44 +211,55 @@ char* demoapp(unsigned int action) {
 
     // do anything that needs to be faster than tick here.
 
-//    if (!tick) return (0);
-    timer += tick;
     
+        if (!tick) return (0);
+    timer += tick;
+
     if (timer >= fpsTimer + 50) {
-        fps = (50 * frames)/(timer - fpsTimer);
+        fps = (50 * frames) / (timer - fpsTimer);
         fpsTimer = timer;
         frames = 0;
+//        makepalette(timer);
     }
 
     switch (state) {
         case s_start:
             monopalette(0, 255);
             generateTextures();
-            printf(cls top butcol "EXIT" bot "Clear   Colour Freeze");
+            syncMode = SOLO;
+            //              printf(cls top butcol "EXIT" bot "Clear   Colour Freeze");
+            printMode();
             state = s_run;
 
 
         case s_run:
-            printf(tabx6 taby0 whi "%5dfps", fps );
-
-
-            //            for (x = 0; x < dispwidth; x++) {
-            //                for (y = 0; y < dispheight - 16; y++) {
-            //                    PIXEL(x, y) = x + y + counter;
-            //                }
-            //            }
-            //
-            //            counter++;
+            printf(tabx6 taby0 whi "%5dfps e:%d", fps, rxError);
 
             draw();
 
-            dispimage(0, 8, dispwidth, dispheight - 16, img_mono, cambuffer);
+            dispimage(0, 8, dispwidth, dispheight - 16, img_mono | (syncMode == LEFTSIDE ? img_revscan : 0), cambuffer);
             frames++;
 
-            readKeys();
+            switch (syncMode) {
+                case LEFTSIDE:
+                    rxState();
+                    makepalette(paletteOffset);
+                    break;
+                case RIGHTSIDE:
+                    paletteOffset += 4;
+                    makepalette(paletteOffset);
+                    readKeys();
+                    txState();
+                case SOLO:
+                    paletteOffset += 4;
+                    makepalette(paletteOffset);
+                    readKeys();
+            }
 
-            
-//            if (butpress & but3) state = s_freeze;
+            if (butpress & but3) {
+                syncMode++;
+                printMode();
+            }
             break;
 
         case s_freeze:
@@ -101,8 +268,8 @@ char* demoapp(unsigned int action) {
 
     } // switch state
 
-//    if (butpress & but1) state = s_start; // clear screen & restart
-//    if (butpress & but2) if (++colour == 8) colour = 1;
+    //    if (butpress & but1) state = s_start; // clear screen & restart
+    //    if (butpress & but2) if (++colour == 8) colour = 1;
 
 
 
@@ -139,11 +306,6 @@ LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
-
-#include <math.h>
-#include <string.h>
-
 
 
 #define screenWidth 128
@@ -188,20 +350,19 @@ int worldMap[mapWidth][mapHeight] = {
 };
 
 
-double posX = 22.0, posY = 11.5; //x and y start position
-double dirX = -1.0, dirY = 0.0; //initial direction vector
-double planeX = 0.0, planeY = 0.66; //the 2d raycaster version of camera plane
 
 double time = 0; //time of current frame
 double oldTime = 0; //time of previous frame
 
-void makepalette() {
+
+void makepalette(int offset) {
     unsigned int i, d;
-    uint8_t r,g,b;
+    uint8_t r, g, b;
     for (i = 0; i != 256; i++) {
-        r = sin(i/81.0)*255;
-        g = sin((i+85)/81.0)*255;
-        b = sin((i+170)/81.0)*255;
+        d = i + offset;
+        r = (sinlut[d & 0xff] *i)>>8;
+        g = (sinlut[(d+85) & 0xff] *i)>>8;
+        b = (sinlut[(d+170) & 0xff] *i)>>8;
         palette[i] = rgbto16(r, b, g);
     }
     palette[0] = 0;
@@ -211,45 +372,45 @@ void generateTextures() {
     int x, y, t;
     for (x = 0; x < texWidth; x++) {
         for (y = 0; y < texHeight; y++) {
-            
-            TEXTURE(0,x,y) = ((x+y)&0x7) * 8;
-            TEXTURE(1,x,y) = abs(x - y)*4;
-            TEXTURE(2,x,y) = abs(y - x)*4;
-            TEXTURE(3,x,y) = (x + y)*4;
-            TEXTURE(4,x,y) = x*y;
-            TEXTURE(5,x,y) = abs(sin((x-texWidth)/6.0) * cos((y-texHeight)/6.0) * 255);
-            TEXTURE(6,x,y) = (x ^ y) * 4;
-            TEXTURE(7,x,y) = 128 * (x % 8 && y % 8);
-            TEXTURE(8,x,y) = (x-texWidth)*4;
-            
+
+            TEXTURE(0, x, y) = ((x + y)&0x7) * 8;
+            TEXTURE(1, x, y) = abs(x - y)*4;
+            TEXTURE(2, x, y) = abs(y - x)*4;
+            TEXTURE(3, x, y) = (x + y)*4;
+            TEXTURE(4, x, y) = x*y;
+            TEXTURE(5, x, y) = abs(sin((x - texWidth) / 6.0) * cos((y - texHeight) / 6.0) * 255);
+            TEXTURE(6, x, y) = (x ^ y) * 4;
+            TEXTURE(7, x, y) = 128 * (x % 8 && y % 8);
+            TEXTURE(8, x, y) = (x - texWidth)*4;
+
         }
     }
-    makepalette();
-    
-////generate some textures
-////  for(int x = 0; x < texWidth; x++)
-////  for(int y = 0; y < texHeight; y++)
-////  {
-////    int xorcolor = (x * 256 / texWidth) ^ (y * 256 / texHeight);
-////    //int xcolor = x * 256 / texWidth;
-////    int ycolor = y * 256 / texHeight;
-////    int xycolor = y * 128 / texHeight + x * 128 / texWidth;
-////    texture[0][texWidth * y + x] = 65536 * 254 * (x != y && x != texWidth - y); //flat red texture with black cross
-////    texture[1][texWidth * y + x] = xycolor + 256 * xycolor + 65536 * xycolor; //sloped greyscale
-////    texture[2][texWidth * y + x] = 256 * xycolor + 65536 * xycolor; //sloped yellow gradient
-////    texture[3][texWidth * y + x] = xorcolor + 256 * xorcolor + 65536 * xorcolor; //xor greyscale
-////    texture[4][texWidth * y + x] = 256 * xorcolor; //xor green
-////    texture[5][texWidth * y + x] = 65536 * 192 * (x % 16 && y % 16); //red bricks
-////    texture[6][texWidth * y + x] = 65536 * ycolor; //red gradient
-////    texture[7][texWidth * y + x] = 128 + 256 * 128 + 65536 * 128; //flat grey texture
-////  }
-//
+    makepalette(paletteOffset);
+
+    ////generate some textures
+    ////  for(int x = 0; x < texWidth; x++)
+    ////  for(int y = 0; y < texHeight; y++)
+    ////  {
+    ////    int xorcolor = (x * 256 / texWidth) ^ (y * 256 / texHeight);
+    ////    //int xcolor = x * 256 / texWidth;
+    ////    int ycolor = y * 256 / texHeight;
+    ////    int xycolor = y * 128 / texHeight + x * 128 / texWidth;
+    ////    texture[0][texWidth * y + x] = 65536 * 254 * (x != y && x != texWidth - y); //flat red texture with black cross
+    ////    texture[1][texWidth * y + x] = xycolor + 256 * xycolor + 65536 * xycolor; //sloped greyscale
+    ////    texture[2][texWidth * y + x] = 256 * xycolor + 65536 * xycolor; //sloped yellow gradient
+    ////    texture[3][texWidth * y + x] = xorcolor + 256 * xorcolor + 65536 * xorcolor; //xor greyscale
+    ////    texture[4][texWidth * y + x] = 256 * xorcolor; //xor green
+    ////    texture[5][texWidth * y + x] = 65536 * 192 * (x % 16 && y % 16); //red bricks
+    ////    texture[6][texWidth * y + x] = 65536 * ycolor; //red gradient
+    ////    texture[7][texWidth * y + x] = 128 + 256 * 128 + 65536 * 128; //flat grey texture
+    ////  }
+    //
 }
 
 void draw() {
-    int x, y, mapX, mapY, stepX, stepY, hit, side, lineHeight, drawStart, drawEnd, texNum, texX, d, texY;
+    int x, y, mapX, mapY, stepX, stepY, hit, side, lineHeight, drawStart, drawEnd, texNum, texX, d, texY, cOffset;
     double cameraX, rayPosX, rayPosY, rayDirX, rayDirY, sideDistX, sideDistY, deltaDistX, deltaDistY, perpWallDist, wallX, frameTime, moveSpeed, rotSpeed, oldPlaneX, oldDirX;
-    
+
     for (x = 0; x < screenWidth; x++) for (y = 0; y < screenHeight; y++) PIXEL(x, y) = 0; //clear the buffer instead of cls()    
     for (x = 0; x < screenWidth; x++) {
         //calculate ray position and direction
@@ -331,22 +492,28 @@ void draw() {
         if (side == 0) wallX = rayPosY + perpWallDist * rayDirY;
         else wallX = rayPosX + perpWallDist * rayDirX;
         wallX -= floor((wallX));
-        
+
 
         //x coordinate on the texture
         texX = wallX * texWidth;
-        if(side == 0 && rayDirX > 0) texX = texWidth - texX - 1;
-        if(side == 1 && rayDirY < 0) texX = texWidth - texX - 1;
+        if (side == 0 && rayDirX > 0) texX = texWidth - texX - 1;
+        if (side == 1 && rayDirY < 0) texX = texWidth - texX - 1;
+        
+        
 
         for (y = drawStart; y < drawEnd; y++) {
             d = y * 256 - screenHeight * 128 + lineHeight * 128; //256 and 128 factors to avoid floats
             texY = ((d * texHeight) / lineHeight) / 256;
-            
+
             //Uint32 color = texture[texNum][texHeight * texY + texX];
-            uint8_t color = TEXTURE(texNum,texX,texY);
-//            make color darker for y-sides: R, G and B byte each divided through two with a "shift" and an "and"
-//            if (side == 1) color = (color >> 1);
-            PIXEL(x, y) = color;
+            uint8_t color = TEXTURE(texNum, texX, texY);
+            //            make color darker for y-sides: R, G and B byte each divided through two with a "shift" and an "and"
+            //            if (side == 1) color = (color >> 1);
+            //flip horizontal, vertical flip done during dispimage
+            if (syncMode == LEFTSIDE)
+                PIXEL((screenWidth - x), y) = color;
+            else 
+                PIXEL(x, y) = color;
         }
     }
 
@@ -379,78 +546,83 @@ void draw() {
 #define moveScale 32768.0
 
 void readKeys() {
-    
-    double moveSpeed = 5.0/20; //the constant value is in squares/second
-    double rotSpeed = 3.0/20; //the constant value is in radians/second
+
+    double moveSpeed = 5.0 / 20; //the constant value is in squares/second
+    double rotSpeed = 3.0 / 20; //the constant value is in radians/second
     double oldDirX, oldPlaneX;
     double newX, newY;
-    
+
     //move forward if no wall in front of you
-        
+
     if (abs(accz) > deadzone) {
         moveSpeed = 0;
         if (accz > deadzone) {
-            moveSpeed = (accz-deadzone)/moveScale;
+            moveSpeed = (accz - deadzone) / moveScale;
         }
         if (accz < -deadzone) {
-            moveSpeed = (accz+deadzone)/moveScale;
+            moveSpeed = (accz + deadzone) / moveScale;
         }
-        
+
         newX = posX + dirX * moveSpeed;
         newY = posY + dirY * moveSpeed;
-        
+
         if (worldMap[(int) newX][(int) posY] == 0) posX = newX;
-        if (worldMap[(int) posX][(int) newY ] == 0) posY = newY;   
+        if (worldMap[(int) posX][(int) newY ] == 0) posY = newY;
     }
 
-    
-    
-    if (butpress & but4) {
-        if (worldMap[(int)(posX + dirX * moveSpeed)][(int)(posY)] == 0) posX += dirX * moveSpeed;
-        if (worldMap[(int)(posX)][(int)(posY + dirY * moveSpeed)] == 0) posY += dirY * moveSpeed;
-    }
-    //move backwards if no wall behind you
-    if (butpress & but3) {
-        if (worldMap[(int)(posX - dirX * moveSpeed)][(int)(posY)] == 0) posX -= dirX * moveSpeed;
-        if (worldMap[(int)(posX)][(int)(posY - dirY * moveSpeed)] == 0) posY -= dirY * moveSpeed;
-    }
-    
-    
+
+
+    //    if (butpress & but4) {
+    //        if (worldMap[(int)(posX + dirX * moveSpeed)][(int)(posY)] == 0) posX += dirX * moveSpeed;
+    //        if (worldMap[(int)(posX)][(int)(posY + dirY * moveSpeed)] == 0) posY += dirY * moveSpeed;
+    //    }
+    //    //move backwards if no wall behind you
+    //    if (butpress & but3) {
+    //        if (worldMap[(int)(posX - dirX * moveSpeed)][(int)(posY)] == 0) posX -= dirX * moveSpeed;
+    //        if (worldMap[(int)(posX)][(int)(posY - dirY * moveSpeed)] == 0) posY -= dirY * moveSpeed;
+    //    }
+
+
     if (abs(accx) > deadzone) {
         rotSpeed = 0;
         if (accx > deadzone)
-            rotSpeed = -(accx-deadzone)/moveScale;
+            rotSpeed = -(accx - deadzone) / moveScale;
         if (accx < -deadzone)
-            rotSpeed = -(accx+deadzone)/moveScale;
-        
-        
+            rotSpeed = -(accx + deadzone) / moveScale;
+
+
         oldDirX = dirX;
         dirX = dirX * cos(rotSpeed) - dirY * sin(rotSpeed);
         dirY = oldDirX * sin(rotSpeed) + dirY * cos(rotSpeed);
         oldPlaneX = planeX;
         planeX = planeX * cos(rotSpeed) - planeY * sin(rotSpeed);
         planeY = oldPlaneX * sin(rotSpeed) + planeY * cos(rotSpeed);
-        
+
     }
     
-    //rotate to the right
-    if (butpress & but2) {
-        //both camera direction and camera plane must be rotated
-        oldDirX = dirX;
-        dirX = dirX * cos(-rotSpeed) - dirY * sin(-rotSpeed);
-        dirY = oldDirX * sin(-rotSpeed) + dirY * cos(-rotSpeed);
-        oldPlaneX = planeX;
-        planeX = planeX * cos(-rotSpeed) - planeY * sin(-rotSpeed);
-        planeY = oldPlaneX * sin(-rotSpeed) + planeY * cos(-rotSpeed);
-    }
-    //rotate to the left
-    if (butpress & but1) {
-        //both camera direction and camera plane must be rotated
-        oldDirX = dirX;
-        dirX = dirX * cos(rotSpeed) - dirY * sin(rotSpeed);
-        dirY = oldDirX * sin(rotSpeed) + dirY * cos(rotSpeed);
-        oldPlaneX = planeX;
-        planeX = planeX * cos(rotSpeed) - planeY * sin(rotSpeed);
-        planeY = oldPlaneX * sin(rotSpeed) + planeY * cos(rotSpeed);
-    }
+//    if (abs(accy) < 16000) {
+//        paletteOffset += accy/1000.0;
+//        makepalette(paletteOffset);
+//    }
+
+    //    //rotate to the right
+    //    if (butpress & but2) {
+    //        //both camera direction and camera plane must be rotated
+    //        oldDirX = dirX;
+    //        dirX = dirX * cos(-rotSpeed) - dirY * sin(-rotSpeed);
+    //        dirY = oldDirX * sin(-rotSpeed) + dirY * cos(-rotSpeed);
+    //        oldPlaneX = planeX;
+    //        planeX = planeX * cos(-rotSpeed) - planeY * sin(-rotSpeed);
+    //        planeY = oldPlaneX * sin(-rotSpeed) + planeY * cos(-rotSpeed);
+    //    }
+    //    //rotate to the left
+    //    if (butpress & but1) {
+    //        //both camera direction and camera plane must be rotated
+    //        oldDirX = dirX;
+    //        dirX = dirX * cos(rotSpeed) - dirY * sin(rotSpeed);
+    //        dirY = oldDirX * sin(rotSpeed) + dirY * cos(rotSpeed);
+    //        oldPlaneX = planeX;
+    //        planeX = planeX * cos(rotSpeed) - planeY * sin(rotSpeed);
+    //        planeY = oldPlaneX * sin(rotSpeed) + planeY * cos(rotSpeed);
+    //    }
 }

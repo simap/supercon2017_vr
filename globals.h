@@ -22,7 +22,7 @@ extern unsigned int cammax; // limit of camera memory - will wrap round
 // _____________________________________________________________________________serial
 
 #if serialcontrol==1
-extern volatile unsigned int rxptr, rxtimer;
+extern volatile int rxhead, rxtail, rxtimer;
 extern unsigned char rxbuf[rxbufsize];
 #endif
 //___________________________________________________________________________________________ general memory  
