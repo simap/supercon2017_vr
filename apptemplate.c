@@ -1,10 +1,11 @@
-// template demonstration application for camera badge
-// new apps need to be added to list in applist.h
 
-
-#define PIXEL(x,y) cambuffer[y*dispwidth + x]
-
-
+/*
+ * Much of the 3d code was borrowed from
+ * http://lodev.org/cgtutor/
+ * This is an amazing resource, and he has many interesting tutorials! 
+ * 
+ * Sorry for the ugly code, this was a hack!
+ */
 
 #include "cambadge.h"
 #include "globals.h"
@@ -17,6 +18,9 @@
 #define s_start 0
 #define s_run 1
 #define s_freeze 2
+
+#define PIXEL(x,y) cambuffer[y*dispwidth + x]
+
 
 #define screenWidth 128
 #define screenHeight 112
@@ -340,6 +344,8 @@ char* demoapp(unsigned int action) {
 
 
 /*
+
+from http://lodev.org/cgtutor/
 Copyright (c) 2004-2007, Lode Vandevenne
 
 All rights reserved.
